@@ -2,7 +2,7 @@ name: Skaner Planow Lekcji
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Uruchamia się automatycznie co 24 godziny
+    - cron: '0 3 * * *'  # Uruchamia się automatycznie co 24 godziny o 5 UTC+2
   workflow_dispatch:      # Pozwala na ręczne uruchomienie przyciskiem na GitHubie
 
 jobs:
