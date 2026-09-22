@@ -1,0 +1,29 @@
+name: Skaner Planow Lekcji
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Uruchamia się automatycznie co 24 godziny
+  workflow_dispatch:      # Pozwala na ręczne uruchomienie przyciskiem na GitHubie
+
+jobs:
+  run-scanner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pobierz kod repozytorium
+        uses: actions/checkout@v4
+
+      - name: Konfiguracja Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Instalacja zależności
+        run: |
+          pip install httpx aiosqlite
+
+      - name: Uruchomienie skanera
+        env:
+          DISCORD_WEBHOOK_URL_1: ${{ secrets.DISCORD_WEBHOOK_URL_1 }}
+          DISCORD_WEBHOOK_URL_3: ${{ secrets.DISCORD_WEBHOOK_URL_3 }}
+        run: |
+          python skaner_bot.py
