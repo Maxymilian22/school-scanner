@@ -2,13 +2,18 @@ name: Skaner Planow Lekcji
 
 on:
   schedule:
-    - cron: '0 13 * * 5'  # Piątki o 15:00 czasu polskiego (UTC+2)
-  workflow_dispatch:      # Pozwala też na ręczne uruchomienie
+    - cron: '0 13 * * 5'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [trigger-scanner] # To pozwala uruchomić skaner przez zewnętrzne API
 
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
     steps:
+      - name: Pobierz kod repozytorium
+        uses: actions/checkout@v4
+        
       - name: Pobierz kod repozytorium
         uses: actions/checkout@v4
 
