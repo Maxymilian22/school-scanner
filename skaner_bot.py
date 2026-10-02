@@ -439,14 +439,14 @@ async def run_scan_cycle():
             url, response = await future
             if response and response.status_code == 200:
                 content_hash = hashlib.md5(response.content).hexdigest()
-                current_data = {"hash": content_hash, "size": len(response.content), "last_checked": current_time}
+                last_mod_header = response.headers.get("Last-Modified", "")
+                current_data = {"hash": content_hash, "size": len(response.content), "last_modified": last_mod_header, "last_checked": current_time}
                 
                 previous_data = await get_state_from_db(url)
                 await save_state_to_db(url, current_data)
 
                 # Sprawdzenie warunku Last-Modified dla 2 pierwszych kluczowych stron (<= 48h)
                 if url in KEY_MONITOR_URLS[:2]:
-                    last_mod_header = response.headers.get("Last-Modified")
                     if last_mod_header:
                         try:
                             mod_dt = parsedate_to_datetime(last_mod_header)
@@ -536,7 +536,21 @@ async def run_scan_cycle():
             if resp and resp.status_code == 200 and not is_soft_404(resp.text):
                 branch = task_branch_mapping.get(index_url)
                 h = hashlib.md5(resp.content).hexdigest()
-                await save_state_to_db(index_url, {"hash": h, "size": len(resp.content), "last_checked": current_time})
+                last_mod_header = resp.headers.get("Last-Modified", "")
+                
+                # Zapis do bazy stanu indeksu głównego, żeby unikać fałszywych alarmów
+                previous_data = await get_state_from_db(index_url)
+                await save_state_to_db(index_url, {
+                    "hash": h,
+                    "size": len(resp.content),
+                    "last_modified": last_mod_header,
+                    "last_checked": current_time
+                })
+
+                if previous_data and previous_data.get("hash") != h:
+                    log_change(f"ALARM: Zmiana w głównym indeksie: {index_url}")
+                    changes_detected = True
+
                 if branch and branch not in active_links:
                     active_links.append(branch)
                     print(f"\n[+] [ZNALEZIONO 200 OK] {index_url}")
@@ -582,7 +596,20 @@ async def run_scan_cycle():
             elif response.status_code == 200 and not is_soft_404(response.text):
                 branch = b_branch_to_url.get(index_url)
                 h = hashlib.md5(response.content).hexdigest()
-                await save_state_to_db(index_url, {"hash": h, "size": len(response.content), "last_checked": current_time})
+                last_mod_header = response.headers.get("Last-Modified", "")
+                
+                previous_data = await get_state_from_db(index_url)
+                await save_state_to_db(index_url, {
+                    "hash": h,
+                    "size": len(response.content),
+                    "last_modified": last_mod_header,
+                    "last_checked": current_time
+                })
+
+                if previous_data and previous_data.get("hash") != h:
+                    log_change(f"ALARM: Zmiana w sekwencji: {index_url}")
+                    changes_detected = True
+
                 if branch and branch not in active_links:
                     active_links.append(branch)
                     print(f"\n[+] [ZNALEZIONO 200 OK] {index_url}")
@@ -696,7 +723,8 @@ async def run_scan_cycle():
                 _, t_resp = await throttled_get(client, t_url, timeout=15.0)
                 if t_resp and t_resp.status_code == 200 and not is_soft_404(t_resp.text):
                     h = hashlib.md5(t_resp.content).hexdigest()
-                    await save_state_to_db(t_url, {"hash": h, "size": len(t_resp.content), "last_checked": current_time})
+                    last_mod_header = t_resp.headers.get("Last-Modified", "")
+                    await save_state_to_db(t_url, {"hash": h, "size": len(t_resp.content), "last_modified": last_mod_header, "last_checked": current_time})
                     save_success_url(t_url)
                     print(f"\n[+] [ZNALEZIONO 200 OK (Dogrywka)] {t_url}")
             s3_duration = (datetime.now() - s3_start).total_seconds()
