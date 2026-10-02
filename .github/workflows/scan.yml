@@ -20,6 +20,7 @@ jobs:
       - name: Instalacja zależności
         run: |
           pip install httpx aiosqlite
+          pip install "httpx[http2]" aiosqlite
 
       - name: Uruchomienie skanera
         env:
