@@ -24,8 +24,8 @@ HEADERS = {
 
 # --- POBIERANIE WEBHOOKÓW Z ZMIENNYCH ŚRODOWISKOWYCH (GITHUB SECRETS) ---
 WEBHOOK_PLANY = os.getenv("DISCORD_WEBHOOK_URL_1")    # #plany-lekcji
-WEBHOOK_STATUS = os.getenv("DISCORD_WEBHOOK_URL_3")   # #wymuś-skan
-IS_MANUAL_RUN = os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch"
+WEBHOOK_STATUS = os.getenv("DISCORD_WEBHOOK_URL_3")   # #skan
+IS_MANUAL_RUN = True                                  # Zawsze wysyłaj statusy kroków na Discord
 
 # --- KONFIGURACJA WYDAJNOŚCIOWA I FUNKCJONALNA ---
 DAEMON_MODE = False                 # False = jeden skan i koniec (tryb dla GitHub Actions)
@@ -414,9 +414,8 @@ async def run_scan_cycle():
     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"\n[*] [{current_time}] Uruchamianie skanera ULTIMATE v11...")
     
-    # Jeśli uruchomiono skan na żądanie, wyślij komunikat na kanał #wymuś-skan
     if IS_MANUAL_RUN and WEBHOOK_STATUS:
-        await send_discord_msg(WEBHOOK_STATUS, "⚙️ **Rozpoczynam skanowanie na żądanie planów lekcji...**")
+        await send_discord_msg(WEBHOOK_STATUS, "⚙️ **Rozpoczynam skanowanie planów lekcji...**")
 
     await init_db()
     changes_detected = False
@@ -445,7 +444,6 @@ async def run_scan_cycle():
                 previous_data = await get_state_from_db(url)
                 await save_state_to_db(url, current_data)
 
-                # Sprawdzenie warunku Last-Modified dla 2 pierwszych kluczowych stron (<= 48h)
                 if url in KEY_MONITOR_URLS[:2]:
                     if last_mod_header:
                         try:
@@ -464,7 +462,10 @@ async def run_scan_cycle():
                     changes_detected = True
         
         s0_duration = (datetime.now() - s0_start).total_seconds()
-        print(f"[*] [Krok 0] Zakończony w {s0_duration:.2f}s")
+        msg_s0 = f"[*] [Krok 0] Zakończony w {s0_duration:.2f}s"
+        print(msg_s0)
+        if IS_MANUAL_RUN and WEBHOOK_STATUS:
+            await send_discord_msg(WEBHOOK_STATUS, msg_s0)
 
         # KROK 1: PORTAL I ŚCIEŻKI PRIORYTETOWE
         print(f"\n[*] Krok 1: Analiza portalu z planami i ścieżek priorytetowych...")
@@ -538,7 +539,6 @@ async def run_scan_cycle():
                 h = hashlib.md5(resp.content).hexdigest()
                 last_mod_header = resp.headers.get("Last-Modified", "")
                 
-                # Zapis do bazy stanu indeksu głównego, żeby unikać fałszywych alarmów
                 previous_data = await get_state_from_db(index_url)
                 await save_state_to_db(index_url, {
                     "hash": h,
@@ -557,7 +557,10 @@ async def run_scan_cycle():
 
         step1_duration = (datetime.now() - step1_start).total_seconds()
         s1_speed = (total_priority / step1_duration) if step1_duration > 0 else 0
-        print(f"[*] [Krok 1] Zakończony w {step1_duration:.2f}s | Średnio: {s1_speed:.2f} adresów/s")
+        msg_s1 = f"[*] [Krok 1] Zakończony w {step1_duration:.2f}s | Średnio: {s1_speed:.2f} adresów/s"
+        print(msg_s1)
+        if IS_MANUAL_RUN and WEBHOOK_STATUS:
+            await send_discord_msg(WEBHOOK_STATUS, msg_s1)
 
         # KROK 2: SKAN SEKWENCYJNY
         brute_branches = generate_brute_structures()
@@ -616,13 +619,16 @@ async def run_scan_cycle():
 
         step2_duration = (datetime.now() - step2_start).total_seconds()
         s2_speed = (total_brute / step2_duration) if step2_duration > 0 else 0
-        print(f"[*] [Krok 2 - Skan] Zakończony w {step2_duration:.2f}s | Średnio: {s2_speed:.2f} adresów/s")
+        msg_s2_scan = f"[*] [Krok 2 - Skan] Zakończony w {step2_duration:.2f}s | Średnio: {s2_speed:.2f} adresów/s"
+        print(msg_s2_scan)
+        if IS_MANUAL_RUN and WEBHOOK_STATUS:
+            await send_discord_msg(WEBHOOK_STATUS, msg_s2_scan)
+            
         print(f"[*] Skan sekwencyjny zakończony. Unikalnych aktywnych gałęzi: {len(active_links)}")
 
         # GŁĘBOKI SKAN ZASOBÓW Z WYKORZYSTANIEM LAST-MODIFIED (HEAD)
         target_urls = set()
         
-        # Dodanie plików ramkowych w głównym katalogu, jeśli włączone
         if CHECK_FRAME_INDEX_FILES:
             for fname in ["index_n.htm", "index_o.htm", "index_s.htm"]:
                 target_urls.add(BASE_URL + fname)
@@ -713,7 +719,10 @@ async def run_scan_cycle():
 
         step2_deep_duration = (datetime.now() - step2_deep_start).total_seconds()
         s2_deep_speed = (total_links / step2_deep_duration) if step2_deep_duration > 0 else 0
-        print(f"[*] [Krok 2 - Zasoby] Zakończony w {step2_deep_duration:.2f}s | Średnio: {s2_deep_speed:.2f} adresów/s")
+        msg_s2_deep = f"[*] [Krok 2 - Zasoby] Zakończony w {step2_deep_duration:.2f}s | Średnio: {s2_deep_speed:.2f} adresów/s"
+        print(msg_s2_deep)
+        if IS_MANUAL_RUN and WEBHOOK_STATUS:
+            await send_discord_msg(WEBHOOK_STATUS, msg_s2_deep)
 
         # KROK 3: DOGRYWKA TIMEOUTÓW
         if timeout_urls_temp:
@@ -728,12 +737,17 @@ async def run_scan_cycle():
                     save_success_url(t_url)
                     print(f"\n[+] [ZNALEZIONO 200 OK (Dogrywka)] {t_url}")
             s3_duration = (datetime.now() - s3_start).total_seconds()
-            print(f"[*] [Krok 3] Zakończony w {s3_duration:.2f}s")
+            msg_s3 = f"[*] [Krok 3] Zakończony w {s3_duration:.2f}s"
+            print(msg_s3)
+            if IS_MANUAL_RUN and WEBHOOK_STATUS:
+                await send_discord_msg(WEBHOOK_STATUS, msg_s3)
 
     total_duration = (datetime.now() - start_time).total_seconds()
-    print(f"\n[*] Cykl zakończony. Całkowity czas: {total_duration:.2f} sekund.")
+    msg_total = f"\n[*] Cykl zakończony. Całkowity czas: {total_duration:.2f} sekund."
+    print(msg_total)
+    if IS_MANUAL_RUN and WEBHOOK_STATUS:
+        await send_discord_msg(WEBHOOK_STATUS, msg_total)
 
-    # Komunikat końcowy w przypadku ręcznego skanowania
     if IS_MANUAL_RUN and WEBHOOK_STATUS:
         status_msg = "✅ **Skanowanie planów zakończone!**"
         if changes_detected:
