@@ -13,9 +13,6 @@ jobs:
     steps:
       - name: Pobierz kod repozytorium
         uses: actions/checkout@v4
-        
-      - name: Pobierz kod repozytorium
-        uses: actions/checkout@v4
 
       - name: Konfiguracja Pythona
         uses: actions/setup-python@v5
