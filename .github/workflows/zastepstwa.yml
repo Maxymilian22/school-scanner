@@ -1,5 +1,5 @@
 name: Skaner Zastępstw
-
+# pls dzialaj
 on:
   schedule:
     # Poniedziałek - Piątek: co 5 minut od 12:30 do 20:00 UTC (14:30 - 22:00 czasu polskiego)
