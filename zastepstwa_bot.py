@@ -6,7 +6,7 @@ import asyncio
 import aiosqlite
 
 # --- KONFIGURACJA TRYBU DAEMON ---
-DAEMON_MODE = False  # Ustaw na True, jeśli chcesz uruchomić w ciągłej pętli
+DAEMON_MODE = True  # Ustaw na True, jeśli chcesz uruchomić w ciągłej pętli
 COOLDOWN_SECONDS = 300  # Czas oczekiwania w sekundach (5 minut)
 
 URL_ZASTEPSTWA = "https://broniewski.edu.pl/index.php/zmiany-w-planie"
