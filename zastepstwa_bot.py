@@ -4,10 +4,13 @@ import httpx
 import hashlib
 import asyncio
 import aiosqlite
+import random
+import subprocess
+from datetime import datetime, timezone, timedelta
 
-# --- KONFIGURACJA TRYBU DAEMON ---
-DAEMON_MODE = True  # Ustaw na True, jeśli chcesz uruchomić w ciągłej pętli
-COOLDOWN_SECONDS = 300  # Czas oczekiwania w sekundach (5 minut)
+# --- KONFIGURACJA ---
+DAEMON_MODE = True  # Tryb pętli na czas działania GitHub Actions (max 6h)
+TZ_POLAND = timezone(timedelta(hours=2))  # UTC+2 (czas polski)
 
 URL_ZASTEPSTWA = "https://broniewski.edu.pl/index.php/zmiany-w-planie"
 BASE_URL = "https://broniewski.edu.pl"
@@ -20,6 +23,22 @@ WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL_2")
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
+
+def commit_db_to_github():
+    """Wysyła zaktualizowany plik bazy danych z powrotem do repozytorium GitHub."""
+    try:
+        subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
+        subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True)
+        subprocess.run(["git", "add", "zastepstwa_state.db"], check=True)
+        # Commit wykonuje się tylko, gdy plik bazy się zmienił
+        result = subprocess.run(["git", "commit", "-m", "Auto-update stanu bazy danych [skip ci]"], capture_output=True, text=True)
+        if "nothing to commit" not in result.stdout:
+            subprocess.run(["git", "push"], check=True)
+            print("[+] Zapisano i wysłano stan bazy danych do repozytorium GitHub.")
+        else:
+            print("[*] Brak nowych zmian w bazie danych do wysłania.")
+    except Exception as e:
+        print(f"[!] Błąd zapisywania bazy do GitHub: {e}")
 
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
@@ -47,6 +66,8 @@ async def save_state(primary_image, image_hash):
             VALUES (1, ?, ?)
         """, (primary_image, image_hash))
         await db.commit()
+    # Po zapisaniu lokalnym, pushujemy bazy do GitHuba
+    commit_db_to_github()
 
 async def send_discord_alert(image_urls, images_bytes_list, date_text):
     if not WEBHOOK_URL:
@@ -55,7 +76,6 @@ async def send_discord_alert(image_urls, images_bytes_list, date_text):
 
     content = f"📢 **NOWE ZASTĘPSTWA!** ({date_text})\n"
     
-    # Pakujemy wszystkie pobrane pliki graficzne jako załączniki do webhooka
     files = {}
     for idx, (url, img_bytes) in enumerate(zip(image_urls, images_bytes_list)):
         filename = os.path.basename(url)
@@ -67,7 +87,7 @@ async def send_discord_alert(image_urls, images_bytes_list, date_text):
                 await client.post(WEBHOOK_URL, data={"content": content}, files=files, timeout=30.0)
             else:
                 await client.post(WEBHOOK_URL, json={"content": content}, timeout=10.0)
-            print("[+] Pomyślnie wysłano powiadomienie na Discorda z pełnymi obrazkami.")
+            print("[+] Pomyślnie wysłano powiadomienie na Discorda.")
         except Exception as e:
             print(f"[!] Błąd wysyłania na Discorda: {e}")
 
@@ -86,11 +106,9 @@ async def check_zastepstwa():
 
         html = response.text
 
-        # 1. Wyciągamy nagłówek daty
         date_match = re.search(r'<h2>(.*?)</h2>', html, re.IGNORECASE)
         date_text = date_match.group(1).strip() if date_match else "Brak daty"
 
-        # 2. Wyciągamy wszystkie obrazy PNG z katalogu /images/
         image_matches = re.findall(r'src=["\'](/images/[a-zA-Z0-9_-]+\.png)["\']', html)
         
         if not image_matches:
@@ -100,7 +118,6 @@ async def check_zastepstwa():
         full_image_urls = [BASE_URL + img if img.startswith("/") else BASE_URL + "/" + img for img in image_matches]
         primary_image_url = full_image_urls[0]
 
-        # 3. Pobieramy WSZYSTKIE grafik do pamięci (żeby wysłać je jako fizyczne pliki)
         images_bytes_list = []
         for img_url in full_image_urls:
             try:
@@ -114,11 +131,9 @@ async def check_zastepstwa():
             print("[!] Nie udało się pobrać żadnej grafiki zastępstw.")
             return
 
-        # Obliczamy hash pierwszej (głównej) grafiki do weryfikacji zmian
         primary_image_bytes = images_bytes_list[0]
         current_hash = hashlib.md5(primary_image_bytes).hexdigest()
 
-        # 4. Porównujemy stan z bazą danych
         saved_state = await get_saved_state()
 
         if saved_state is None:
@@ -134,15 +149,41 @@ async def check_zastepstwa():
 
 async def main():
     if DAEMON_MODE:
-        print(f"[*] Uruchamianie w trybie DAEMON (cooldown: {COOLDOWN_SECONDS}s)...")
+        print("[*] Uruchamianie w trybie DAEMON na GitHub Actions...")
         while True:
+            sleep_time = 300
             try:
-                await check_zastepstwa()
+                now_pl = datetime.now(TZ_POLAND)
+                current_hour = now_pl.hour
+                weekday = now_pl.weekday()
+                
+                is_night = 1 <= current_hour < 4
+                is_weekend = weekday >= 5
+                is_slow_window = 10 <= current_hour < 12
+
+                if is_night:
+                    print(f"[*] [{now_pl.strftime('%H:%M')}] Nocna cisza – usypianie na 1 godzinę.")
+                    sleep_time = 3600
+                else:
+                    await check_zastepstwa()
+                    
+                    if is_weekend:
+                        sleep_time = random.randint(1200, 2400)  # 20-40 min
+                        print(f"[*] [{now_pl.strftime('%H:%M')}] Weekend. Kolejny skan za {sleep_time // 60} min.")
+                    elif is_slow_window:
+                        sleep_time = random.randint(840, 960)    # 14-16 min
+                        print(f"[*] [{now_pl.strftime('%H:%M')}] Okno 10-12. Kolejny skan za {sleep_time // 60} min.")
+                    else:
+                        sleep_time = random.randint(240, 360)    # 4-6 min
+                        print(f"[*] [{now_pl.strftime('%H:%M')}] Standardowy skan. Kolejny skan za {sleep_time // 60} min.")
+
             except Exception as e:
-                print(f"[!] Wystąpił nieoczekiwany błąd w pętli: {e}")
-            await asyncio.sleep(COOLDOWN_SECONDS)
+                print(f"[!] Wystąpił błąd w pętli: {e}")
+                sleep_time = 300
+
+            await asyncio.sleep(sleep_time)
     else:
-        print("[*] Uruchamianie w trybie POJEDYNCZYM (GitHub Actions)...")
+        print("[*] Uruchamianie w trybie POJEDYNCZYM...")
         await check_zastepstwa()
 
 if __name__ == "__main__":
