@@ -5,6 +5,10 @@ import hashlib
 import asyncio
 import aiosqlite
 
+# --- KONFIGURACJA TRYBU DAEMON ---
+DAEMON_MODE = False  # Ustaw na True, jeśli chcesz uruchomić w ciągłej pętli
+COOLDOWN_SECONDS = 300  # Czas oczekiwania w sekundach (5 minut)
+
 URL_ZASTEPSTWA = "https://broniewski.edu.pl/index.php/zmiany-w-planie"
 BASE_URL = "https://broniewski.edu.pl"
 
@@ -44,27 +48,26 @@ async def save_state(primary_image, image_hash):
         """, (primary_image, image_hash))
         await db.commit()
 
-async def send_discord_alert(image_urls, primary_image_bytes, date_text):
+async def send_discord_alert(image_urls, images_bytes_list, date_text):
     if not WEBHOOK_URL:
         print("[!] Brak skonfigurowanego DISCORD_WEBHOOK_URL.")
         return
 
     content = f"📢 **NOWE ZASTĘPSTWA!** ({date_text})\n"
-    for idx, url in enumerate(image_urls, start=1):
-        content += f"🖼️ Grafika {idx}: {url}\n"
-
+    
+    # Pakujemy wszystkie pobrane pliki graficzne jako załączniki do webhooka
     files = {}
-    if primary_image_bytes:
-        filename = os.path.basename(image_urls[0])
-        files = {"file": (filename, primary_image_bytes, "image/png")}
+    for idx, (url, img_bytes) in enumerate(zip(image_urls, images_bytes_list)):
+        filename = os.path.basename(url)
+        files[f"file{idx}"] = (filename, img_bytes, "image/png")
 
     async with httpx.AsyncClient() as client:
         try:
             if files:
-                await client.post(WEBHOOK_URL, data={"content": content}, files=files, timeout=15.0)
+                await client.post(WEBHOOK_URL, data={"content": content}, files=files, timeout=30.0)
             else:
                 await client.post(WEBHOOK_URL, json={"content": content}, timeout=10.0)
-            print("[+] Pomyślnie wysłano powiadomienie na Discorda.")
+            print("[+] Pomyślnie wysłano powiadomienie na Discorda z pełnymi obrazkami.")
         except Exception as e:
             print(f"[!] Błąd wysyłania na Discorda: {e}")
 
@@ -83,7 +86,7 @@ async def check_zastepstwa():
 
         html = response.text
 
-        # 1. Wyciągamy nagłówek daty (np. ZASTĘPSTWA W DNIU 05.10.2026)
+        # 1. Wyciągamy nagłówek daty
         date_match = re.search(r'<h2>(.*?)</h2>', html, re.IGNORECASE)
         date_text = date_match.group(1).strip() if date_match else "Brak daty"
 
@@ -94,34 +97,53 @@ async def check_zastepstwa():
             print("[*] Nie znaleziono obrazków zastępstw w kodzie HTML.")
             return
 
-        # Budujemy pełne adresy URL
         full_image_urls = [BASE_URL + img if img.startswith("/") else BASE_URL + "/" + img for img in image_matches]
         primary_image_url = full_image_urls[0]
 
-        # 3. Pobieramy pierwszy (najważniejszy) obrazek i liczymy jego hash
-        img_response = await client.get(primary_image_url, timeout=10.0)
-        if img_response.status_code != 200:
-            print("[!] Nie udało się pobrać głównej grafiki zastępstw.")
+        # 3. Pobieramy WSZYSTKIE grafik do pamięci (żeby wysłać je jako fizyczne pliki)
+        images_bytes_list = []
+        for img_url in full_image_urls:
+            try:
+                img_res = await client.get(img_url, timeout=10.0)
+                if img_res.status_code == 200:
+                    images_bytes_list.append(img_res.content)
+            except Exception as e:
+                print(f"[!] Błąd pobierania obrazka {img_url}: {e}")
+
+        if not images_bytes_list:
+            print("[!] Nie udało się pobrać żadnej grafiki zastępstw.")
             return
 
-        primary_image_bytes = img_response.content
+        # Obliczamy hash pierwszej (głównej) grafiki do weryfikacji zmian
+        primary_image_bytes = images_bytes_list[0]
         current_hash = hashlib.md5(primary_image_bytes).hexdigest()
 
         # 4. Porównujemy stan z bazą danych
         saved_state = await get_saved_state()
 
         if saved_state is None:
-            # Pierwsze uruchomienie
             print(f"[*] Pierwsze uruchomienie. Wykryto obrazek: {primary_image_url}")
             await save_state(primary_image_url, current_hash)
-            await send_discord_alert(full_image_urls, primary_image_bytes, date_text)
+            await send_discord_alert(full_image_urls, images_bytes_list, date_text)
         elif saved_state["primary_image"] != primary_image_url or saved_state["image_hash"] != current_hash:
-            # Zmiana nazwy pliku LUB zmiana zawartości grafiki!
             print(f"[!] ZMIANA ZASTĘPSTW! Nowy plik: {primary_image_url}")
             await save_state(primary_image_url, current_hash)
-            await send_discord_alert(full_image_urls, primary_image_bytes, date_text)
+            await send_discord_alert(full_image_urls, images_bytes_list, date_text)
         else:
             print("[*] Brak zmian w zastępstwach.")
 
+async def main():
+    if DAEMON_MODE:
+        print(f"[*] Uruchamianie w trybie DAEMON (cooldown: {COOLDOWN_SECONDS}s)...")
+        while True:
+            try:
+                await check_zastepstwa()
+            except Exception as e:
+                print(f"[!] Wystąpił nieoczekiwany błąd w pętli: {e}")
+            await asyncio.sleep(COOLDOWN_SECONDS)
+    else:
+        print("[*] Uruchamianie w trybie POJEDYNCZYM (GitHub Actions)...")
+        await check_zastepstwa()
+
 if __name__ == "__main__":
-    asyncio.run(check_zastepstwa())
+    asyncio.run(main())
