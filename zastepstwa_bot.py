@@ -24,13 +24,54 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
+def get_target_date_text() -> str:
+    """
+    Wyznacza datę docelową zastępstw w języku polskim:
+    - Piątek po 12:00, Sobota, Niedziela -> Data najbliższego Poniedziałku
+    - Po godz. 12:00 (Pn-Czw) -> Data jutrzejsza
+    - Przed godz. 12:00 (Pn-Pt) -> Data dzisiejsza
+    """
+    now = datetime.now(TZ_POLAND)
+    weekday = now.weekday()  # 0=Pon, 1=Wt, ..., 4=Pt, 5=Sob, 6=Niedz
+    hour = now.hour
+
+    # Okno weekendowe: od Piątku 12:00 do końca Niedzieli
+    if (weekday == 4 and hour >= 12) or weekday >= 5:
+        days_until_monday = (7 - weekday) % 7
+        if days_until_monday == 0:
+            days_until_monday = 7  # Gdyby wywołać w poniedziałek, ale ten warunek wyklucza
+        target_date = now + timedelta(days=days_until_monday)
+    # Dni powszednie po 12:00 -> jutro
+    elif hour >= 12:
+        target_date = now + timedelta(days=1)
+    # Przed 12:00 -> dzisiaj
+    else:
+        target_date = now
+
+    days_pol = ["poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela"]
+    day_name = days_pol[target_date.weekday()]
+    formatted_date = target_date.strftime("%d.%m.%Y")
+
+    return f"{day_name}, {formatted_date}"
+
 def commit_db_to_github():
-    """Wysyła zaktualizowany plik bazy danych z powrotem do repozytorium GitHub."""
+    """Wysyła zaktualizowany plik bazy danych z powrotem do repozytorium GitHub z autoryzacją."""
+    token = os.getenv("GITHUB_TOKEN")
+    repo_url = os.getenv("GITHUB_REPOSITORY")
+    
+    if not token or not repo_url:
+        print("[!] Brak tokenu GITHUB_TOKEN lub nazwy repozytorium w środowisku.")
+        return
+
     try:
         subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
         subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True)
+        
+        auth_url = f"https://x-access-token:{token}@github.com/{repo_url}.git"
+        subprocess.run(["git", "remote", "set-url", "origin", auth_url], check=True)
+
         subprocess.run(["git", "add", "zastepstwa_state.db"], check=True)
-        # Commit wykonuje się tylko, gdy plik bazy się zmienił
+        
         result = subprocess.run(["git", "commit", "-m", "Auto-update stanu bazy danych [skip ci]"], capture_output=True, text=True)
         if "nothing to commit" not in result.stdout:
             subprocess.run(["git", "push"], check=True)
@@ -66,7 +107,6 @@ async def save_state(primary_image, image_hash):
             VALUES (1, ?, ?)
         """, (primary_image, image_hash))
         await db.commit()
-    # Po zapisaniu lokalnym, pushujemy bazy do GitHuba
     commit_db_to_github()
 
 async def send_discord_alert(image_urls, images_bytes_list, date_text):
@@ -106,8 +146,8 @@ async def check_zastepstwa():
 
         html = response.text
 
-        date_match = re.search(r'<h2>(.*?)</h2>', html, re.IGNORECASE)
-        date_text = date_match.group(1).strip() if date_match else "Brak daty"
+        # Wyznaczenie daty z wykorzystaniem logiki zegara w Pythonie
+        date_text = get_target_date_text()
 
         image_matches = re.findall(r'src=["\'](/images/[a-zA-Z0-9_-]+\.png)["\']', html)
         
@@ -118,14 +158,23 @@ async def check_zastepstwa():
         full_image_urls = [BASE_URL + img if img.startswith("/") else BASE_URL + "/" + img for img in image_matches]
         primary_image_url = full_image_urls[0]
 
+        # Pobieranie obrazków z próbami ponowienia (Retry x3)
         images_bytes_list = []
         for img_url in full_image_urls:
-            try:
-                img_res = await client.get(img_url, timeout=10.0)
-                if img_res.status_code == 200:
-                    images_bytes_list.append(img_res.content)
-            except Exception as e:
-                print(f"[!] Błąd pobierania obrazka {img_url}: {e}")
+            success = False
+            for attempt in range(3):
+                try:
+                    img_res = await client.get(img_url, timeout=10.0)
+                    if img_res.status_code == 200:
+                        images_bytes_list.append(img_res.content)
+                        success = True
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+            
+            if not success:
+                print(f"[!] Ostrzeżenie: Nie udało się pobrać obrazka po 3 próbach: {img_url}")
 
         if not images_bytes_list:
             print("[!] Nie udało się pobrać żadnej grafiki zastępstw.")
