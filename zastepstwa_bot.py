@@ -217,13 +217,13 @@ async def main():
                     await check_zastepstwa()
                     
                     if is_weekend:
-                        sleep_time = random.randint(1200, 2400)  # 20-40 min
+                        sleep_time = random.randint(840, 960)  # 14-16 min
                         print(f"[*] [{now_pl.strftime('%H:%M')}] Weekend. Kolejny skan za {sleep_time // 60} min.")
                     elif is_slow_window:
-                        sleep_time = random.randint(840, 960)    # 14-16 min
+                        sleep_time = random.randint(300, 480)    # 5-8 min
                         print(f"[*] [{now_pl.strftime('%H:%M')}] Okno 10-12. Kolejny skan za {sleep_time // 60} min.")
                     else:
-                        sleep_time = random.randint(240, 360)    # 4-6 min
+                        sleep_time = random.randint(120, 180)    # 2-3 min
                         print(f"[*] [{now_pl.strftime('%H:%M')}] Standardowy skan. Kolejny skan za {sleep_time // 60} min.")
 
             except Exception as e:
